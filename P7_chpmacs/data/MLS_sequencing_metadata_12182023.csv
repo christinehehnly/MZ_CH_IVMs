@@ -1,0 +1,15 @@
+MLS_ID,ID,Sample_Type,Nucleic_Acid,Assay,Processing_site,Sample_Def,Sorting
+MLS0036,E14.5_1,Epiplexus,RNA,mRNA-Lexogen,Lehtinen,E14,batch_1
+MLS0037,E14.5_1,Stromal,RNA,mRNA-Lexogen,Lehtinen,E14,batch_1
+MLS0038,E14.5_2,Stromal,RNA,mRNA-Lexogen,Lehtinen,E14,batch_2
+MLS0039,E14.5_2,Epiplexus,RNA,mRNA-Lexogen,Lehtinen,E14,batch_2
+MLS0040,E14.5_3,Stromal,RNA,mRNA-Lexogen,Lehtinen,E14,batch_3
+MLS0041,E14.5_3,Epiplexus,RNA,mRNA-Lexogen,Lehtinen,E14,batch_3
+MLS0042,P7_1,Stromal,RNA,mRNA-Lexogen,Lehtinen,P7,batch_4
+MLS0043,P7_1,Epiplexus,RNA,mRNA-Lexogen,Lehtinen,P7,batch_4
+MLS0044,P7_2,Stromal,RNA,mRNA-Lexogen,Lehtinen,P7,batch_5
+MLS0045,P7_2,Epiplexus,RNA,mRNA-Lexogen,Lehtinen,P7,batch_5
+MLS0046,P7_3,Stromal,RNA,mRNA-Lexogen,Lehtinen,P7,batch_6
+MLS0047,P7_3,Epiplexus,RNA,mRNA-Lexogen,Lehtinen,P7,batch_6
+MLS0048,P7_4,Stromal,RNA,mRNA-Lexogen,Lehtinen,P7,batch_7
+MLS0049,P7_4,Epiplexus,RNA,mRNA-Lexogen,Lehtinen,P7,batch_7

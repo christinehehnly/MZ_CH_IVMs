@@ -1,0 +1,644 @@
+---
+title: "RBC vs Saline E15 RNASeq"
+author: "Christine Hehnly"
+date: "02052025"
+output: html_document
+---
+
+```{r load packages}
+
+
+
+library(dplyr)
+library(ggplot2)
+library(edgeR)
+library(limma)
+library(biomaRt)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(gplots)
+library(RColorBrewer)
+library(NMF)
+library(edgeR)
+library(dplyr)
+library(ggplot2)
+library(tibble)
+library(DESeq2)
+library(SummarizedExperiment)
+library(vsn)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(hexbin)
+library(iSEE)
+library(workflowr)
+library(EnhancedVolcano)
+library(tidyverse)
+
+
+```
+
+## Including Plots
+
+You can lpso embed plots, for example:
+
+```{r load data, filter , echo=FALSE}
+#load data
+counts<-read.delim("data/lps_e15_02052024_all_name_strand.txt", header = TRUE, sep = "\t", dec = ".", row.names("Geneid"))
+
+bio<-read.csv("data/ivh_e15_data_2024.csv", header=TRUE)
+# Check and convert data types if needed
+bio$ID <- as.character(bio$ID)
+
+ChP <- counts %>%
+    column_to_rownames("Geneid")# turn the geneid column into rownames
+    names(ChP) <- sub('^dedup_bams.', '', names(ChP))
+    names(ChP) <- gsub(pattern='*_R1_umi_deduplicated_sorted_name.bam', '', names(ChP))
+    names(ChP) <- gsub(pattern='*_umi_deduplicated_sorted_name.bam', '', names(ChP))
+ChP<-ChP[,6:ncol(ChP)]
+
+keep <- rowSums(ChP) > 5
+ChP_filtered <-ChP[keep,] 
+bio$Condition<-as.factor(bio$Condition)
+
+ivh_ids<-colnames(ChP)
+
+# Create a DESeqDataSet
+dds <- DESeqDataSetFromMatrix(countData = ChP_filtered, colData = bio, design = ~ Condition)
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+
+
+
+```
+
+```{r DESeq2 distance method and assess norm}
+ #library size
+
+dds$libSize <-  colSums(assay(dds))
+
+colData(dds) |>
+  as.data.frame() |>
+  ggplot(aes(x = ID, y = libSize, fill = Condition)) + 
+         geom_bar(stat = "identity") + theme_bw() + 
+         labs(x = "Sample", y = "Total count in millions") + 
+         theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+#library size is all over the place
+
+dds <- estimateSizeFactors(dds)
+
+
+ggplot(data.frame(libSize = colSums(assay(dds)),
+                  sizeFactor = sizeFactors(dds),
+                  Group = colData(dds)$Condition),
+       aes(x = libSize, y = sizeFactor, col = colData(dds)$Condition)) + 
+    geom_point(size = 5) + theme_bw() + 
+    labs(x = "Library size", y = "Size factor")
+
+#variance increases with average read count
+
+meanSdPlot(assay(dds), ranks = FALSE)
+
+
+vsd <- DESeq2::vst(dds, blind = TRUE)
+meanSdPlot(assay(vsd), ranks = FALSE)
+ntd <- normTransform(dds)
+meanSdPlot(assay(ntd))
+mean_expression <- rowMeans(counts(dds))
+variance <- rowVars(counts(dds), useNames = FALSE)
+
+
+# Create a scatter plot
+plot(mean_expression, variance,  main = "Mean vs Variance",
+     xlab = "Mean Expression", ylab = "Pooled Variance")
+
+
+
+# Add a smoother (optional)
+smooth_line <- loess.smooth(mean_expression, variance)
+lines(smooth_line$x, smooth_line$y, col = "red", lwd = 2)
+
+
+genesums<-rowSums(ChP_filtered)
+density_plot <- density(genesums)
+plot(density_plot$x, main = "RNA-seq Count Distribution", xlab = "Counts", ylab = "Density")
+
+qqnorm(rowSums(ChP))
+qqline(rowSums(ChP))
+
+
+
+# Create a list of 4 colors to use which are the same used throughout this chapter 
+library(scales)
+library(affy)
+myColors <- hue_pal()(4)
+
+plotDensity(log2(ChP + 0.1), 
+            lty=c(1:ncol(ChP)), xlab='Log2(count)',
+            main='Expression Distribution')
+
+## Add a legend and vertical line
+legend('topright', names(ChP), lty=c(1:ncol(ChP)),
+       col=rep(myColors, each=3))
+abline(v=-1.5, lwd=1, col='red', lty=2)
+```
+
+
+
+
+
+```{r DGE Figure 2K}
+
+dds$Condition<- relevel(dds$Condition, ref= "Saline" )
+
+#DGE
+dge <-DESeq(dds)
+res<-results(dge)
+
+write.csv(res,"results/res_IVH_E15_112024.csv")
+
+res <- results(dge,
+    contrast = c('Condition','RBC','Saline'))
+
+#res <- lfcShrink(dge,
+#    contrast = c('Condition','RBC','Saline'), res=res, type='normal')
+genelabel <- c("Hmox1", "Gpat3", "Slc25a17", "Hspa1a", "Fggy", "Mrc1","Gclm","Slc48a1","Prdx1","Srxn1","Pon1")
+#pdf("results/volcano_LV_01152025.pdf")
+    EnhancedVolcano(res,
+    lab = rownames(res),
+    x = 'log2FoldChange',
+    y = 'padj',
+    title = 'RBC vs Saline 24hr LV',
+    pCutoff = 0.05,
+    FCcutoff = 0.5,
+    pointSize = 3.0,
+    labSize = 4.0)
+
+
+
+plotMA(res, ylim=c(-5,5))
+
+summary(res, alpha=0.05)
+
+#dev.off()
+```
+
+
+```{r figure heatmap with subset of genes}
+vst <- vst(dds, blind=FALSE)  # Variance Stabilizing Transformation
+vst_counts <- assay(vst)  # Extract normalized counts
+
+# Sum genes across conditions
+conditions <- colData(dds)$Condition
+summed_mat <- t(rowsum(t(vst_counts), group=conditions))  
+
+# Remove unused factor levels
+#vst_counts$`Condition` <- droplevels(vst_counts$`Condition`)
+
+# Define annotation colors correctly
+ann_colors <- list(
+  `Condition` = c("Saline" = "#e31a1c", "RBC" = "#00ffff")
+)
+
+#Subset genes
+
+genelabel <- c("Hmox1", "Gpat3", "Slc25a17", "Hspa1a", "Fggy", "Mrc1","Gclm","Slc48a1","Prdx1","Srxn1","Pon1")  
+selected_genes <- rownames(summed_mat) %in% genelabel  # Subset for specific genes
+mat <- summed_mat[selected_genes, ]
+
+mat <- mat - rowMeans(mat)  # Centering by row means
+
+df <- data.frame(Condition = colnames(mat), row.names = colnames(mat))
+
+library(gridExtra)
+png("results/GOI_vst_IVHe14.png", height = 10, width = 13, units = "in", res = 300)
+
+heatmap <- pheatmap(mat, 
+                    cluster_rows=TRUE, 
+                    show_rownames=TRUE, 
+                    show_colnames = FALSE,
+                    fontsize = 24,
+                    cluster_cols=TRUE, 
+                    annotation_col=df, 
+                    legend=TRUE, 
+                    annotation_legend=TRUE)
+
+dev.off()
+# Manually add legends stacked on top of each other
+
+png("results/GOI_vst_IVHe14elegend.png", height = 10, width = 10, units = "in", res = 300)
+
+grid.arrange(heatmap$gtable,
+             top = textGrob("VST Normalized Expression\nCondition", gp = gpar(fontsize = 12, fontface = "bold")))
+
+dev.off()
+```
+
+
+
+```{r figture 2L}
+library(biomaRt)
+library(org.Mm.eg.db)
+
+
+res_sig<-subset(res, padj < 0.05)
+
+
+# we want the log2 fold change 
+original_gene_list <- res_sig$log2FoldChange
+
+# name the vector
+names(original_gene_list) <- rownames(res_sig)
+
+# omit any NA values 
+gene_list<-na.omit(original_gene_list)
+
+# sort the list in decreasing order (required for clusterProfiler)
+gene_list = sort(gene_list, decreasing = TRUE)
+
+
+
+gse_24hr <- gseGO(geneList=gene_list, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb =org.Mm.eg.db,
+             pAdjustMethod = "BH")
+
+
+
+require(DOSE)
+
+pdf("results/dotplot_gseRBC_24hr.pdf", height = 10, width=10)
+dotplot(gse_24hr, showCategory=10, split=".sign", font.size =18) + facet_grid(.~.sign)    
+  theme(
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 14),
+    strip.text = element_text(size = 16),
+    plot.title = element_text(size = 20, face = "bold"),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 14)
+  ) +
+  labs(title = "Dotplot for GSE 24hr LV", x = "Gene Sets", y = "Gene Count")
+dev.off()
+
+
+
+
+
+
+```
+
+
+```{r figure 2M}
+library(ReactomePA)
+library(org.Mm.eg.db)
+library(clusterProfiler)
+
+# Filter significant genes
+res_sig <- subset(res, padj < 0.05)
+
+# Extract log2FC values
+original_gene_list <- res_sig$log2FoldChange
+names(original_gene_list) <- rownames(res_sig)
+
+# Remove NA values
+gene_list <- na.omit(original_gene_list)
+
+# Sort in decreasing order
+gene_list <- sort(gene_list, decreasing = TRUE)
+
+# Convert gene symbols/Ensembl IDs to ENTREZ IDs
+gene_df <- bitr(names(gene_list),
+                fromType = "SYMBOL", 
+                toType = "ENTREZID", 
+                OrgDb = org.Mm.eg.db)
+
+# Keep only matched genes
+gene_list <- gene_list[gene_df$SYMBOL]
+names(gene_list) <- gene_df$ENTREZID
+
+# Run Reactome enrichment
+reactome_enrichment <- enrichPathway(
+  gene = names(gene_list),
+  organism = "mouse",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.2,
+  readable = TRUE   # converts back to gene symbols in output
+)
+
+# Save dotplot
+pdf("results/reactome_dotplot_LV24hr.pdf", height = 10, width = 10)
+print(
+  dotplot(reactome_enrichment, showCategory = 10, font.size = 18) +
+    theme(
+      axis.text.x = element_text(size = 14, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 14),
+      strip.text = element_text(size = 16),
+      plot.title = element_text(size = 20, face = "bold"),
+      legend.title = element_text(size = 18),
+      legend.text = element_text(size = 14)
+    ) +
+    labs(title = "Dotplot for Reactome 24hr LV", x = "Pathways", y = "Gene Count")
+)
+dev.off()
+
+```
+
+
+
+
+
+
+```{r deconvolution}
+#library(SQUID)
+library(Seurat)
+library(granulator)
+library(MuSiC)
+ChP_filtered_sc<-readRDS("data/chp_final.rds") ## file on single cell portal https://singlecell.broadinstitute.org/single_cell/study/SCP2713/the-choroid-plexus-synergizes-with-immune-cells-during-neuroinflammation-single-cell-transcriptomics-of-the-choroid-plexus
+
+getwd()
+# Step 1: Extract the gene expression data matrix
+scC<- ChP_filtered_sc[["RNA"]]$counts
+scC<-as.matrix(scC)
+
+# Extract sample IDs (assuming it's stored in a meta data slot)
+sample_ids <- ChP_filtered_sc@meta.data$hash.ID
+
+# Extract cluster IDs (assuming it's stored in a meta data slot)
+cluster_ids <- ChP_filtered_sc@meta.data$seurat_clusters
+
+# Extract cell types (assuming it's stored in a meta data slot)
+cell_types <- ChP_filtered_sc@meta.data$celltype
+
+cell_ids<-row.names(ChP_filtered_sc@meta.data)
+
+# Create the scMeta data frame
+scMeta <- data.frame(cell.id = cell_ids, sample.id = sample_ids, cluster.id = cluster_ids, cellType = cell_types)
+rownames(scMeta)<-scMeta$cell.id
+
+ChP_mat<-as.matrix(ChP_filtered)
+
+effLen<-length(rownames(ChP_mat))
+
+bulkRNA<-get_TPM(ChP_mat,effLen=effLen)
+
+
+
+cell_agg<-AggregateExpression(
+  ChP_filtered_sc,
+  assays = "RNA",
+  return.seurat = FALSE,
+  group.by = "subtype3",
+  normalization.method = "LogNormalize",
+  scale.factor = 10000,
+  margin = 1,
+  verbose = TRUE,
+)
+cell_agg<-as.matrix(cell_agg$RNA)
+
+
+idkeep<-c("ChP-LPS-1", "ChP-LPS-3", "ChP-Saline")
+
+```
+```{r rename clusters}
+library(dplyr)
+library(Biobase)
+
+bio$ID->row.names(bio)
+
+meta<-AnnotatedDataFrame(bio)
+bulkeset<-ExpressionSet(bulkRNA, phenoData=meta)
+scdata<-as.SingleCellExperiment(ChP_filtered_sc)
+clusters.type <- list(
+  Epithelial_3 = 'Pcp4+ Epi',
+  InflammatoryEpi_24hr = c('Chil1+ Icam1+ Epi', 'Epi-2'),
+  Epithelial_2 = c('Chil1+ Epi'),
+  Epithelial_1='Epi-1',
+  Epithelial_4='Pcp4+ Cntn1+ Epi',
+  Epithelial_5='Pcp4+ Epi',
+  Fibroblasts = c('Myofibroblast', 'Fibroblast', 'Pericyte'),
+  InflammatoryFibroblasts = 'Inflammatory Fibroblast',
+  Endothelial = 'Endothelial',
+  Macrophages = c('Infiltrating Macrophage', 'Resident Macrophage', 'Dividing Macrophage', 'Inflammatory Resident Macrophage'),
+  Neutrophils = c('Rpl-high Neu', 'Retnlg+ Neu'),
+  Dendritic = c('cDC1','Dividing DC'),
+  CytotoxicEffectorCells = c('gdT cell', 'CD8 T cell', 'NK cell', 'Dividing NK cell', 'Dividing CD8 T cell'),
+  Monocyte = c('Monocyte', 'moDC')
+)
+
+cluster_mapping <- bind_rows(
+    lapply(names(clusters.type), function(new_name) {
+        data.frame(ident = clusters.type[[new_name]], newCluster = new_name, stringsAsFactors = FALSE)
+    })
+)
+
+cluster_mapping$ident <- as.character(cluster_mapping$ident)
+
+# Extract colData
+col_data <- as.data.frame(colData(scdata))
+
+# Add a new column `newCluster` initialized to NA
+col_data$newCluster <- NA_character_
+
+
+for (i in 1:nrow(cluster_mapping)) {
+    col_data$newCluster[col_data$ident == cluster_mapping$ident[i]] <- cluster_mapping$newCluster[i]
+}
+
+# Check if there are any NAs in newCluster, assign ident if so
+col_data$newCluster[is.na(col_data$newCluster)] <- col_data$ident[is.na(col_data$newCluster)]
+
+# Convert the updated data frame back to DataFrame
+updated_col_data <- DataFrame(col_data)
+
+# Assign the updated DataFrame back to colData of scData
+colData(scdata) <- updated_col_data
+
+# Print updated metadata to verify
+head(colData(scdata))
+
+##set colors for cells
+library(ggplot2)
+
+# Define your cell types
+cell_types <- c(
+    "Epithelial_3",
+    "InflammatoryEpi_24hr",
+    "Epithelial_2",
+    "Epithelial_1",
+    "Epithelial_4",
+    "Epithelial_5",
+    "Fibroblasts",
+    "InflammatoryFibroblasts",
+    "Endothelial",
+    "Macrophages",
+    "Neutrophils",
+    "Dendritic",
+    "CytotoxicEffectorCells",
+    "Monocyte"
+)
+colors <- brewer.pal(n = length(cell_types), name = "Spectral")
+
+
+# Define your colors
+colors <- c(
+    "#1f77b4", # Epithelial_3
+    "#ff7f0e", # InflammatoryEpi_24hr
+    "#2ca02c", # Epithelial_2
+    "#d62728", # Epithelial_1
+    "#9467bd", # Epithelial_4
+    "#8c564b", # Epithelial_5
+    "#e377c2", # Fibroblasts
+    "#7f7f7f", # InflammatoryFibroblasts
+    "#bcbd22", # Endothelial
+    "#17becf", # Macrophages
+    "#aec7e8", # Neutrophils
+    "#9edae5", # Dendritic
+    "#f7b6d2", # CytotoxicEffectorCells
+    "#c5b0d5"  # Monocyte
+)
+
+# Create a named vector
+cell_colors <- setNames(colors, cell_types)
+
+
+```
+
+
+```{r Music deconvolution Figure 2N}
+#music decon
+est.prop = music_prop(bulk.mtx = bulkRNA, sc.sce = scdata, clusters = "newCluster", samples="hash.ID")
+
+df_sc <- as.data.frame(colData(dds)[,c("Condition")])
+
+
+#pdf("results/music_decon_heatmap.#pdf")
+#pheatmap(est.prop$Est.prop.weighted, cluster_rows=TRUE, show_rownames=TRUE,
+#         cluster_cols=FALSE), annotation_row=df_sc)
+
+##Let's see if we look at sum across timepoints and condition
+
+est_cells<-est.prop$Est.prop.weighted
+est_cells<-as.data.frame(est_cells)
+est_cells$MLS_ID<-rownames(est_cells)
+est_cells_long<-gather(est_cells, celltype, weightedProp, Epithelial_5:Dendritic)
+
+est_cells_meta <- merge(est_cells_long, bio, by.x = "MLS_ID", by.y = "ID")
+
+condition_order <- c("Saline", "RBC")
+
+est_cells_meta$Condition <- factor(est_cells_meta$Condition, levels = condition_order)
+
+
+
+condition_data <- est_cells_meta %>% 
+  group_by(celltype,Condition) %>%
+  summarise(Average_Proportion = mean(weightedProp))
+
+ggplot(condition_data, aes(x =Condition, y = Average_Proportion, fill = celltype)) +
+  geom_bar(stat = "identity", width = 1, colour = "black") +
+  labs(fill = "Cell Type") +
+  ggtitle("Cell Type Proportions for 24hr")+
+  labs(fill = "Cell Type") +
+scale_color_manual(values = c(cell_colors))+
+  theme_minimal()+
+scale_color_manual(values = cell_colors)+
+  theme_minimal()+
+   theme(axis.title = element_text(size = 14,
+                                  face = "bold")) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.text = element_text(size = 15, face="bold")) +
+  theme(plot.title = element_text(size=19, face="bold"))
+#ggsave("results/AverageProp_rbc_24hr.png",  width=5.5, height = 6)
+
+
+
+```
+
+
+
+
+
+```{r cell signature from DEG LV 24hr figure 2O}
+library(Seurat)
+library(cowplot)
+library(Seurat)
+library(ggplot2)
+library(ggrepel)
+scdata_seur<-as.Seurat(scdata)
+
+##https://star-protocols.cell.com/protocols/1386#before-you-begin
+deg<-read.csv("results/res_IVH_E15_112024.csv")
+
+deg<-deg[!is.na(deg$X),]
+deg<-deg[!is.na(deg$padj),]
+deg<- deg[deg$padj < 0.05,]
+deg<- deg[order(-deg$log2FoldChange),]
+deg_up <- deg[deg$log2FoldChange > 0,]
+deg_down <- deg[deg$log2FoldChange < 0,]
+
+deg_up<-deg_up$X
+deg_down<-deg_down$X
+
+gene_names <- rownames(scdata)
+
+
+deg_up<-deg_up[deg_up %in% gene_names]
+deg_down<-deg_down[deg_down %in% gene_names]
+
+scdata_seur <- SetIdent(scdata_seur, value = "newCluster")
+
+sc_data <- ScaleData(scdata_seur , features = deg_up)
+sc_data <-SetIdent(sc_data,value="newCluster")
+sc_data <- RunPCA(sc_data, features = deg_up)
+
+
+sc_data@meta.data$ident<-as.factor(sc_data@meta.data$newCluster)
+
+
+topDEGs_list<- rownames(sc_data@reductions[["pca"]]@feature.loadings)
+
+pca_plot<-DimPlot(sc_data, reduction = "pca", pt.size = 0.1, label = T, label.size = 4,repel=T) 
+
+
+#legend<- get_legend(pca_plot)
+
+c<- pca_plot & NoLegend()
+
+ggsave(filename = "results/rbc_decon_up_pca_plot_new.png", plot = pca_plot, width = 7, height = 5, dpi = 300)
+
+
+####DOWN 
+
+scdata_seur <- SetIdent(scdata_seur, value = "newCluster")
+
+sc_data <- ScaleData(scdata_seur , features = deg_down)
+sc_data <-SetIdent(sc_data,value="newCluster")
+sc_data <- RunPCA(sc_data, features = deg_down)
+
+
+sc_data@meta.data$ident<-as.factor(sc_data@meta.data$newCluster)
+
+
+topDEGs_list<- rownames(sc_data@reductions[["pca"]]@feature.loadings)
+
+pca_plot<-DimPlot(sc_data, reduction = "pca", pt.size = 0.1, label = T, label.size = 4,repel=T) 
+
+
+
+c<- pca_plot & NoLegend()
+
+ggsave(filename = "results/rbc_decon_down_pca_plot.png", plot = pca_plot, width = 7, height = 5, dpi = 300)
+
+
+
+
+sessionInfo()
+
+
+```
+

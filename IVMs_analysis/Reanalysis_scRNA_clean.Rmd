@@ -1,0 +1,770 @@
+---
+title: "ChP snRNA reanalysis"
+author: "Chritine Hehnly"
+date: "2024-10-04"
+output: html_document
+---
+
+```{r load libraries, include=FALSE}
+
+library(CellChat)
+library(edgeR)
+library(dplyr)
+library(ggplot2)
+library(edgeR)
+library(limma)
+library(biomaRt)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(RColorBrewer)
+library(dplyr)
+library(ggplot2)
+library(DESeq2)
+library(SummarizedExperiment)
+library(vsn)
+library(ComplexHeatmap)
+library(EnhancedVolcano)
+library(tidyverse)
+library(Seurat)
+library(dplyr)
+library(Matrix)
+        
+library(tibble)
+
+```
+
+```{r load data}
+
+##scRNAdata 
+#import data
+expression_matrix1 <- readMM("data/sc_rna_data.mtx") ##data on single cell portal https://singlecell.broadinstitute.org/single_cell/study/SCP1366/choroid-plexus-nucleus-atlas
+expression_matrix2 <- readMM("data/sc_rna_counts.mtx")
+genes <- read.table("data/sc_rna_counts_genes.tsv", header = FALSE)
+barcodes <- read.table("data/sc_rna_counts_barcodes.tsv", header = FALSE)
+
+# Assign row and column names to the expression matrix
+rownames(expression_matrix1) <- genes$V1
+colnames(expression_matrix1) <- barcodes$V1
+
+# Create Seurat object
+seurat_object<-CreateSeuratObject(counts = expression_matrix1, project = "scrna")
+seurat_object[["percent.mt"]] <- PercentageFeatureSet(seurat_object, pattern = "^mt.")
+VlnPlot(seurat_object, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+
+metadata <- read.csv("~/Documents/Lehtinen/Projects/Miri_RNA/final_analysis/SCP1366/scEmbryo_cell_metadata.csv", header = TRUE, row.names = 1)
+seurat_object<- AddMetaData(seurat_object, metadata = metadata)
+
+
+
+# Define the groups you want to filter out (high mt.RNA)
+groups_to_remove <- c("E.3V.V2.Rep2", "E.HCP.V2.Rep2", "E.TCP.V2.Rep2")
+
+# Subset the Seurat object to exclude cells from the specified groups
+seurat_object_filtered <- subset(seurat_object, idents = groups_to_remove, invert=TRUE)
+
+#take out library
+library_prep_protocol<- c("EFO_0009901")
+
+# Subset the Seurat object to exclude cells with the specified library_prep_protocol
+seurat_object_filtered <- subset(seurat_object_filtered, subset = library_preparation_protocol != "EFO_0009901")
+
+
+
+
+```
+
+
+
+```{r reanalysis}
+
+
+macrophages <- subset(seurat_object_filtered, subset = cell_type_subset__ontology_label == "Macrophage")
+
+
+
+# Identification of highly variable features
+macrophages <- FindVariableFeatures(macrophages, selection.method = "vst", nfeature=2000) #was 2000
+
+# Scaling the data
+macrophages <- NormalizeData(macrophages, normalization.method = "LogNormalize")
+
+macrophages <- ScaleData(macrophages)
+
+
+macrophages <- RunPCA(macrophages, features = VariableFeatures(object = macrophages))
+
+# Elbow plot to look at dimensions
+
+ElbowPlot(macrophages)
+
+# Then run FindNeighbors to compute the graph
+macrophages <- FindNeighbors(macrophages)  # Adjust the dims according to your PCA
+macrophages <- FindClusters(macrophages)
+
+print(macrophages[["pca"]], dims = 1:22, nfeatures = 5)
+VizDimLoadings(macrophages, dims = 8, reduction = "pca") 
+
+macrophages <- JackStraw(macrophages, num.replicate = 100)
+
+macrophages<- ScoreJackStraw(macrophages, dims=1:20)
+
+JackStrawPlot(macrophages, dims=1:20)
+ggsave("results/macrophage_jackstraw.png")
+
+macrophages[["pca"]]@stdev
+
+# Jack straw to get significant pcs
+
+macrophages <- RunUMAP(macrophages, dims=1:19)
+
+
+
+# Jack straw to get significant pcs
+
+
+markers <- FindAllMarkers(macrophages, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 1)
+
+plot1 <- VariableFeaturePlot(macrophages)
+top10 <- head(VariableFeatures(macrophages), 15)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE, xnudge = 0, ynudge = 0)
+plot2
+
+
+
+all.genes <- rownames(macrophages)
+
+  markers %>%
+      group_by(cluster) %>%
+      dplyr::filter(avg_log2FC > 1) %>%
+      slice_head(n = 10) %>%
+      ungroup() -> top10
+  DoHeatmap(macrophages, features = top10$gene) + NoLegend()
+ggsave("results/macrophages_heatmap.png")
+
+write.csv(markers,"results/markers_12022024.csv")
+
+# Example of naming clusters
+macrophages <- RenameIdents(macrophages, 
+                            `0` = "Spic+Hmox1",
+                            `1` = "Lyve1+Cd163",
+                            `2` = "Cd9+Spp1+Gpnmb",
+                            `3` = "Nusap+Ki67")
+
+
+
+# Define custom colors
+custom_colors <- c(
+  "Spic+Hmox1" = "#e31a1c",      # Spic = red
+  "Lyve1+Cd163" = "#3690c0",     # Lyve1 = blue
+  "Cd9+Spp1+Gpnmb" = "#2ca25f",  # Cd9 = green
+  "Nusap+Ki67" = "#8856a7"       # Nusap = purple
+)
+
+# Generate UMAP with custom colors
+p <-p<-DimPlot(macrophages, reduction = "umap", label = FALSE, pt.size = 2) + 
+  ggtitle("UMAP of ChP Macrophage Clusters") 
+  LabelClusters(p, id = "ident",  fontface = "bold")
+  scale_color_manual(values = custom_colors)  # Apply custom colors
+
+# Add bold cluster labels
+p <- LabelClusters(p, id = "ident", fontface = "bold")
+
+# Save high-resolution figure
+ggsave("results/umap_final.png", plot = p, width = 7, height = 5, dpi = 300)
+
+
+
+```
+
+
+
+
+
+
+
+```{r BAM, Peritoneal and Microglia }
+
+library(Seurat)
+library(dplyr)
+library(forcats)
+library(ggplot2)
+
+# Define marker sets (mouse gene symbols
+universal_genes <- c("Mafb", "Erm1", "Cebpb", "Pparg")
+lpm_genes       <- c("Gata6", "Timd4", "Mertk", "Klf2", "Cd93", "Vsig4", "Marco", "Cd1c", "Selp")
+spm_genes       <- c("Cd226", "Irf4", "Il1b", "Tnf", "H2-Ab1", "Ccr2", "Lyve1", "Mrc1", "Csf1r")
+sentinel_genes  <- c("Itgam", "Fcgr1", "Cd68", "Cd80", "Cd86", "Tlr2", "Tlr4", "Msr1")
+bam_genes       <- c("Pf4", "F13a1", "Cd163", "Flt1", "Lyve1", "Mrc1")
+microglia_genes <- c("P2ry12", "Tmem119", "Sall1", "Siglech", "Hexb",
+                     "Fcrls", "Gpr34", "Cx3cr1", "Axl", "Crybb1", "Ccl4")
+yam_genes       <- c("Spp1", "Gpnmb", "Lgals3", "Cst7", "Trem2", "Fabp5", "Apoe")
+monocyte_genes  <- c("Cd14","Lyz","Fcn1","S100a8","S100a9")
+
+# Combine into single table
+gene_list <- data.frame(
+  features.plot = c(universal, spm_genes, lpm_genes, microglia_genes, bam_genes, sentinel_genes, monocyte_genes),
+  category = c(
+    rep("Universal", length(universal)),
+    rep("SPM", length(spm_genes)),
+    rep("LPM", length(lpm_genes)),
+    rep("Microglia", length(microglia_genes)),
+    rep("BAM", length(bam_genes)),
+    rep("Sentinel", length(sentinel_genes)),
+    rep("Monocyte", length(monocyte_genes))
+  ),
+  stringsAsFactors = FALSE
+)
+
+# Check which genes are present
+gene_presence <- gene_list$features.plot %in% rownames(macrophages)
+missing_genes <- gene_list$features.plot[!gene_presence]
+cat("Missing genes:\n")
+print(missing_genes)
+
+#  Filter out missing genes
+gene_list <- gene_list %>%
+  filter(features.plot %in% rownames(macrophages))
+
+
+  
+# Generate DotPlot data using RAW gene names ---
+library(ggplot2)
+library(dplyr)
+library(Seurat)
+
+
+
+# Extract the data for ordering later
+plot_data <- dotplot_obj$data
+
+# Order genes by average expression within each category
+gene_order <- plot_data %>%
+  left_join(gene_list, by = c("features.plot")) %>%
+  group_by(category, features.plot) %>%
+  summarise(mean_exp = mean(avg.exp, na.rm = TRUE), .groups = "drop") %>%
+  arrange(category, desc(mean_exp)) %>%
+  group_by(category) %>%
+  mutate(order_within_category = row_number())
+
+
+# Extract the data for ordering later
+plot_data <- dotplot_obj$data
+
+# Order genes by average expression within each category
+gene_order <- plot_data %>%
+  left_join(gene_list, by = c("features.plot")) %>%
+  group_by(category, features.plot) %>%
+  summarise(mean_exp = mean(avg.exp, na.rm = TRUE), .groups = "drop") %>%
+  arrange(category, desc(mean_exp)) %>%
+  group_by(category) %>%
+  mutate(order_within_category = row_number())
+
+plot_data <- left_join(plot_data, gene_order, by = c("features.plot"))
+
+# Reorder factor levels for better visualization
+plot_data <- plot_data %>%
+  group_by(category) %>%
+  mutate(features.plot = forcats::fct_reorder(features.plot, order_within_category)) %>%
+  ungroup()
+
+# Generate the final DotPlot using ggplot2
+p <- ggplot(plot_data, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+  scale_color_gradient(low = "lightgrey", high = "darkred") +
+  scale_size(range = c(0, 6)) +
+  facet_grid(category ~ ., scales = "free_y", space = "free_y") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1, face = "bold"),  # bigger x labels
+    axis.text.y = element_text(size = 14, face = "bold"),                        # bigger y labels
+    axis.title.x = element_text(size = 16, face = "bold"),
+    axis.title.y = element_text(size = 16, face = "bold"),
+    strip.text.y = element_text(size = 14, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "ChP Macrophage Subclusters",
+    y = "Genes",
+    color = "Avg. Exp (scaled)",
+    size = "% Expressed"
+  )
+
+ggsave("results/macrophage_dotplot.png", p, width = 12, height = 10, dpi = 300)
+
+p
+
+
+plot_data <- left_join(plot_data, gene_list, by = c("features.plot"))
+
+gene_order <- plot_data %>%
+  group_by(category, features.plot) %>%
+  summarise(mean_exp = mean(avg.exp.scaled, na.rm = TRUE), .groups = "drop") %>%
+  arrange(category, desc(mean_exp)) %>%
+  group_by(category) %>%
+  mutate(order_within_category = row_number())
+
+plot_data <- left_join(plot_data, gene_order, by = c("features.plot", "category"))
+
+plot_data <- plot_data %>%
+  group_by(category) %>%
+  mutate(features.plot = fct_reorder(features.plot, order_within_category)) %>%
+  ungroup()
+
+ggplot(plot_data, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+  scale_color_gradient(low = "lightgrey", high = "darkred") +
+  scale_size(range = c(0, 6)) +
+  facet_grid(category ~ ., scales = "free_y", space = "free_y") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    axis.text.y = element_text(size = 10),
+    strip.text.y = element_text(size = 12, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "ChP Macrophage Subclusters",
+    y = "Genes",
+    color = "Avg. Exp",
+    size = "% Expressed"
+  )
+```
+
+
+```{r FINAL }
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+
+# Define gene lists
+universal_genes <- c("Mafb", "Erm1", "Cebpb", "Pparg")
+lpm_genes       <- c("Gata6", "Timd4", "Mertk", "Klf2", "Cd93", "Vsig4", "Marco", "Cd1c", "Selp")
+spm_genes       <- c("Cd226", "Irf4", "Il1b", "Tnf", "H2-Ab1", "Ccr2", "Lyve1", "Mrc1", "Csf1r")
+sentinel_genes  <- c("Itgam", "Fcgr1", "Cd68", "Cd80", "Cd86", "Tlr2", "Tlr4", "Msr1")
+bam_genes       <- c("Pf4", "F13a1", "Cd163", "Flt1", "Lyve1", "Mrc1")
+microglia_genes <- c("P2ry12", "Tmem119", "Sall1", "Siglech", "Hexb",
+                     "Fcrls", "Gpr34", "Cx3cr1", "Axl", "Crybb1", "Ccl4")
+yam_genes       <- c("Spp1", "Gpnmb", "Lgals3", "Cst7", "Trem2", "Fabp5", "Apoe")
+monocyte_genes  <- c("Cd14","Lyz","Fcn1","S100a8","S100a9")
+
+
+# Combine into grouped list
+gene_groups <- list(
+  BAM = bam_genes,
+  LPM = lpm_genes,
+  Microglia = microglia_genes,
+  Monocyte = monocyte_genes,
+  Sentinel = sentinel_genes,
+  SPM = spm_genes,
+  Universal = universal_genes
+)
+
+# Subset to just LPM, SPM, Sentinel, Monocyte
+gene_groups1 <- list(
+  LPM = lpm_genes,
+  SPM = spm_genes,
+  Sentinel = sentinel_genes,
+  Monocyte = monocyte_genes
+)
+
+# Build mapping dataframe
+gene_group_df1 <- stack(gene_groups1)
+colnames(gene_group_df1) <- c("gene", "group")
+
+# Keep only genes in the dataset
+gene_group_df1 <- gene_group_df1[gene_group_df1$gene %in% rownames(macrophages), ]
+
+# Function to extract Seurat DotPlot data for a given set of gene groups
+make_dotplot_data <- function(macrophages, gene_groups) {
+  library(Seurat)
+  library(dplyr)
+  
+  # Extract DotPlot data from Seurat
+  dp <- DotPlot(macrophages, features = unlist(gene_groups))$data
+  
+  # Add category column based on gene->group mapping
+  gene_group_df <- stack(gene_groups)
+  colnames(gene_group_df) <- c("features.plot", "category")
+  
+  # Join
+  dp <- left_join(dp, gene_group_df, by = "features.plot")
+  
+  # Keep only genes actually in the object
+  dp <- dp %>% filter(!is.na(category))
+  
+  return(dp)
+}
+gene_groups1 <- list(
+  LPM = lpm_genes,
+  SPM = spm_genes,
+  Sentinel = sentinel_genes,
+  Monocyte = monocyte_genes
+)
+
+plot_data1 <- make_dotplot_data(macrophages, gene_groups1)
+
+p1 <- ggplot(plot_data1, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+  scale_color_gradient(low = "lightgrey", high = "darkred") +
+  scale_size(range = c(0, 6)) +
+  facet_grid(category ~ ., scales = "free_y", space = "free_y") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1, face = "bold"),
+    axis.text.y = element_text(size = 14, face = "bold"),
+    axis.title.x = element_text(size = 16, face = "bold"),
+    axis.title.y = element_text(size = 16, face = "bold"),
+    strip.text.y = element_text(size = 14, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "ChP Macrophage Subclusters",
+    y = "Genes",
+    color = "Avg. Exp (scaled)",
+    size = "% Expressed"
+  )
+
+ggsave("results/macrophage_dotplot_LPM_SPM_Sentinel_Monocyte.png", p1, width = 12, height = 10, dpi = 300)
+p1
+gene_groups2 <- list(
+  BAM = bam_genes,
+  Microglia = microglia_genes,
+  YAMs = yam_genes
+)
+
+plot_data2 <- make_dotplot_data(macrophages, gene_groups2)
+
+
+
+p2 <- ggplot(plot_data2, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+  scale_color_gradient(low = "lightgrey", high = "darkred") +
+  scale_size(range = c(0, 6)) +
+  facet_grid(category ~ ., scales = "free_y", space = "free_y") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1, face = "bold"),
+    axis.text.y = element_text(size = 14, face = "bold"),
+    axis.title.x = element_text(size = 16, face = "bold"),
+    axis.title.y = element_text(size = 16, face = "bold"),
+    strip.text.y = element_text(size = 14, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "ChP Macrophage Subclusters",
+    y = "Genes",
+    color = "Avg. Exp (scaled)",
+    size = "% Expressed"
+  )
+
+ggsave("results/macrophage_dotplot_BAM_Microglia.png", p2, width = 12, height = 10, dpi = 300)
+p2
+universal <- c("Mafb", "Erm1", "Cebpb", "Pparg")
+microglia_core <- c("Tmem119","P2ry12","Sall1","Fcrls","Gpr34","Olfml3","Hexb","Cx3cr1","Siglech")
+bam_core <- c("Mrc1","Lyve1","Cd163","Pf4","F13a1","Mertk","Marco","Timd4")
+sentinel_module <- c("Cd9","Spp1","Gpnmb","Lgals3","Apoe","Fabp5","Cst7","Trem2","Clec7a")
+lpm <- c("Gata6","Tgfbi","Mrc1","Timd4","Lyve1")
+spm <- c("Cx3cr1","Ly6c2","Cd14","Itgam","Ccr2")
+monocyte_core <- c("Cd14","Lyz","Fcn1","S100a8","S100a9")
+
+# For each module, add a score
+macrophages <- AddModuleScore(macrophages, features = list(microglia_core), name = "MicrogliaCore")
+macrophages <- AddModuleScore(macrophages, features = list(bam_core), name = "BAMcore")
+macrophages<- AddModuleScore(macrophages, features = list(sentinel_module), name = "Sentinel")
+macrophages <- AddModuleScore(macrophages, features = list(lpm), name = "LPM")
+macrophages <- AddModuleScore(macrophages, features = list(spm), name = "SPM")
+macrophages <- AddModuleScore(macrophages, features = list(universal), name = "Universal")
+macrophages <- AddModuleScore(macrophages, features = list(monocyte_core), name = "MonocyteCore")
+
+macrophages <- AddModuleScore(macrophages, features = list(yam_genes), name = "YAMsCore")
+
+modules <- c(
+  "Universal1",
+  "MicrogliaCore1",
+  "BAMcore1",
+  "YAMsCore1",        # new
+  "Sentinel1",
+  "LPM1",
+  "SPM1",
+  "MonocyteCore1"
+)
+
+for (m in modules) {
+  df <- data.frame(
+    score = macrophages@meta.data[[m]],
+    cluster = Idents(macrophages)
+  )
+  cat("\n=====", m, "=====\n")
+  print(kruskal.test(score ~ cluster, data = df))
+  print(pairwise.wilcox.test(df$score, df$cluster, p.adjust.method = "bonferroni"))
+}
+
+VlnPlot(
+  macrophages, 
+  features = c("MicrogliaCore1","BAMcore1","YAMsCore1","LPM1","SPM1","MonocyteCore1"), 
+  pt.size = 0
+)
+
+
+
+
+# --- 2. Violin plots for module scores with fixed y-axis and Wilcoxon comparisons ---
+features <- c("MicrogliaCore1", "BAMcore1", "Sentinel1", "LPM1", "SPM1", "MonocyteCore1")
+
+# Generate violin plots
+p <- VlnPlot(
+  macrophages,
+  features = features,
+  pt.size = 0
+)
+
+# Example pairwise comparisons (adjust based on your clusters)
+comparisons <- list(
+  c("Spic+Hmox1", "Cd9+Spp1+Gpnmb"),
+  c("Spic+Hmox1", "OtherCluster"),     # add more as needed
+  c("Cd9+Spp1+Gpnmb", "OtherCluster")
+)
+
+# Add pairwise Wilcoxon tests
+p <- p + stat_compare_means(
+  comparisons = comparisons,
+  method = "wilcox.test"
+)
+
+# Display final plot
+p
+
+
+```
+
+```{r Figure 4F}
+
+umap_list <- lapply(features, function(f) {
+  FeaturePlot(
+    macrophages,
+    features = f,
+    reduction = "umap"
+  ) +
+    ggtitle(f) +
+    scale_color_distiller(palette = "RdBu") +  # Better contrast than RdYlBu
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 12, face = "bold"),
+      legend.title = element_blank()
+    )
+})
+
+# Combine into a single UMAP grid
+umap_grid <- wrap_plots(umap_list) + plot_layout(ncol = 3)
+umap_grid
+# --- Save UMAP grid to file ---
+ggsave(
+  filename = "results/umap_feature_grid.png",  # output file path
+  plot = umap_grid,                            # the plot object
+  width = 10,                                  # width in inches
+  height = 6,                                  # height in inches
+  dpi = 300                                    # resolution
+)
+
+```
+
+
+
+
+
+
+
+```{r supplemental figure}
+library(ggplot2)
+library(dplyr)
+
+# Create data frame from cluster identities
+cluster_counts <- data.frame(
+  Cluster = names(table(Idents(macrophages))),
+  Cell_Count = as.numeric(table(Idents(macrophages)))
+)
+
+# Calculate percentages
+cluster_counts$Percentage <- (cluster_counts$Cell_Count / sum(cluster_counts$Cell_Count)) * 100
+
+# Convert Cluster to factor (to maintain order)
+cluster_counts$Cluster <- factor(cluster_counts$Cluster, levels = cluster_counts$Cluster)
+
+# Define custom colors
+custom_colors <- c(
+  "Spic+Hmox1" = "#e31a1c",      # Spic = red
+  "Lyve1+Cd163" = "#3690c0",            # Lyve1 = blue
+  "Cd9+Spp1+Gpnmb" = "#2ca25f",        # Cd9 = green
+  "Nusap+Ki67" = "#8856a7"            # Nusap = purple
+)
+
+# Plot stacked bar with custom colors and percentage labels
+p <- ggplot(cluster_counts, aes(x = "Macrophages", y = Percentage, fill = Cluster)) +
+  geom_bar(stat = "identity", width = 0.5) +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5), 
+            size = 5, color = "white", fontface = "bold") + # Adjust size/color as needed
+ # theme_minimal() +
+  labs(title = "Macrophage Population Composition", y = "Percentage (%)", x = "") +
+  scale_fill_manual(values = custom_colors) +  # Custom colors assigned here
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.title = element_blank())
+
+# Save plot
+#ggsave("results/macrophage_population_stacked_bar_custom_colors.png", p, width = 5, height = 6)
+
+# Print plot
+print(p)
+
+
+
+```
+
+
+```{r Cell chat epithelial cells to marcrophages single nucleus data figure 4B}
+
+#https://cole-trapnell-lab.github.io/monocle3/docs/trajectories/ 
+
+
+
+seurat_object_filtered <- NormalizeData(seurat_object_filtered, normalization.method = "LogNormalize", scale.factor = 10000)
+seurat_object_filtered <- ScaleData(seurat_object_filtered)
+seurat_object_filtered$cell_type_subset__ontology_label <- iconv(seurat_object_filtered$cell_type_subset__ontology_label, 
+                                                                  from = "UTF-8", 
+                                                                  to = "ASCII//TRANSLIT", 
+                                                                  sub = "")
+
+
+seurat_object_filtered$final_label <- ifelse(seurat_object_filtered$cell_type_subset__ontology_label == "nana",
+            seurat_object_filtered$cell_type__ontology_label,
+            seurat_object_filtered$cell_type_subset__ontology_label)
+
+
+#Create a cellchat object 
+data.input <- seurat_object_filtered[["RNA"]]$data # normalized data matrix
+meta <- as.data.frame(seurat_object_filtered$final_label)
+
+cellchat <- createCellChat(object = seurat_object_filtered, group.by = "final_label", assay = "RNA")
+
+
+# Set the ligand-receptor database (default database)
+CellChatDB <- CellChatDB.mouse 
+
+# Use the predefined database in CellChat
+cellchat@DB <- CellChatDB
+
+# Subset the expression data to ligands and receptors only
+cellchat <- subsetData(cellchat)  
+
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+ptm = Sys.time()
+cellchat <- computeCommunProb(cellchat, type = "triMean")
+
+
+cellchat <- filterCommunication(cellchat, min.cells = 25)
+
+
+
+
+```
+
+```{r merge new macrophages clusters with previous identities}
+
+macrophages$cell_type__ontology_label <- Idents(macrophages)
+support_cells<-subset(seurat_object_filtered, subset = cell_type__ontology_label %in% c("epithelial cell","mesenchymal cell","endothelial cell"))
+
+macro_counts<-macrophages[["RNA"]]$counts
+support_counts<-support_cells[["RNA"]]$counts
+merged<-cbind(macro_counts,support_counts)
+
+macro_meta<-macrophages@meta.data[,1:20]
+supports_meta<-support_cells@meta.data[,1:20]
+
+merged_meta<-rbind(macro_meta, supports_meta)
+
+
+merged_object<-CreateSeuratObject(counts = merged, meta.data=merged_meta, project = "scrna")
+
+merged_object  <- NormalizeData(merged_object , normalization.method = "LogNormalize")
+
+merged_object <- ScaleData(merged_object)
+
+
+
+#Create a cellchat object
+
+data.input <- merged_object[["RNA"]]$data # normalized data matrix
+meta <- as.data.frame(merged_object@meta.data)
+
+cellchat <- createCellChat(object = data.input, meta=meta, group.by = "cell_type__ontology_label")
+
+
+# Set the ligand-receptor database (default database)
+CellChatDB <- CellChatDB.mouse 
+
+# Use the predefined database in CellChat
+cellchat@DB <- CellChatDB
+
+# Subset the expression data to ligands and receptors only
+cellchat <- subsetData(cellchat)  
+
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+ptm = Sys.time()
+cellchat <- computeCommunProb(cellchat, type = "triMean")
+
+
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+
+cellchat <- computeCommunProb(cellchat)       #  communication probabilities
+cellchat<- computeCommunProbPathway(cellchat) # Aggregate signals into pathways
+cellchat <- aggregateNet(cellchat) 
+
+
+
+par(mar = c(2, 2, 2, 2), cex = 1.5)  # cex controls overall text size
+
+##Figure 4B
+pdf("results/support_to_macs_01202025.pdf", height=16, width=15)
+
+support_toMacs<-netVisual_chord_gene(cellchat, 
+                                     sources.use =c(5:7), 
+                                     targets.use = c(1:4),  
+                                     slot.name = "netP", 
+                                       lab.cex = 1.0,
+                                       thresh = 0.05)
+dev.off()
+
+
+
+png("results/macs_to_support_0120205.png", height=3000, width=3000, res=300)  # Larger canvas
+
+
+
+##Figure 4C
+
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+pdf("results/netAnalysis_interactions.pdf", height=6, width=7)
+
+
+netAnalysis_signalingRole_scatter(cellchat, 
+                                  slot.name = "netP")
+dev.off()
+
+```
+
+
+
+
+
+
+
