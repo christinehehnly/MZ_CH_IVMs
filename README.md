@@ -1,6 +1,6 @@
 # MZ_CH_IVMs
 
-This repository contains code and processed data for analyses of the choroid plexus in IVH and further analysis on intraventricular macrophage. 
+This repository contains code and processed data for analyses of the choroid plexus in IVH and for further analyses of intraventricular macrophages. 
 
 ---
 
